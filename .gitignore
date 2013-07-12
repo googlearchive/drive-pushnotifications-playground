@@ -1,0 +1,12 @@
+*.pyc
+*~
+
+client_secrets.json
+
+# google-api-python-client files
+apiclient
+httplib2
+oauth2client
+uritemplate
+gflags.py
+gflags_validators.py

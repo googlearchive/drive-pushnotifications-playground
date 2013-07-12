@@ -1,0 +1,9 @@
+/*
+ * Base CSS file for all styles in this application
+ */
+@media (min-width: 980px) {
+  body {
+    /* Make the container go all the way to the bottom of the topbar */
+    padding-top: 60px;
+  }
+}

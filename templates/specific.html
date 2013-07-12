@@ -1,0 +1,53 @@
+{% extends "subscribe.html" %}
+
+{% block title %}
+Google Drive Push Notifications Playground - Monitor specific files
+{% endblock %}
+
+{% block sheader %}
+<script type="text/javascript">
+  // User interface messages
+  window.unsubscribedTitle = "Subscribe to changes in a specific file";
+  window.unsubscribedContent = "This is a demo application to receive push notifications for changes to a specific file. Select a file to begin.";
+  window.subscribedTitle = "Subscribing";
+  window.subscribedContent = "You are now subscribed to changes for the chosen file. Make changes to that file to receive push notifications.";
+  window.subscribeButton = "Select a file";
+
+  // Use the Google Loader script to load the google.picker script.
+  google.load('picker', '1');
+
+  // Create and render a Picker object for searching images.
+  function subscribe() {
+    var view = new google.picker.View(google.picker.ViewId.DOCS);
+    var picker = new google.picker.PickerBuilder()
+        .enableFeature(google.picker.Feature.NAV_HIDDEN)
+        .addView(view)
+        .addView(new google.picker.DocsUploadView())
+        .setCallback(pickerCallback)
+        .build();
+     picker.setVisible(true);
+  }
+
+  // A simple callback implementation.
+  function pickerCallback(data) {
+    if (data.action == google.picker.Action.PICKED) {
+      updateWait($("#subscribeButton"), window.waitMessage, true);
+      var fileId = data.docs[0].id;
+      // Make AJAX call to subscribe
+      var request = $.ajax({
+        type: "POST",
+        url: "/subscribe",
+        data: { file_id: fileId, state: "{{ state }}" },
+      })
+      request.done(function(msg){
+        updateSubscribed($.parseJSON(msg).notification_id);
+      });
+      request.fail(function(jqXHR){
+        updateWait($("#subscribeButton"), window.subscribeButton, false);
+        alert("Failed:\n" + jqXHR.responseText);
+        checkAuth(jqXHR.status);
+      });
+    }
+  }
+</script>
+{% endblock %}

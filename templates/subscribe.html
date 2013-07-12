@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block header %}
+<script src="https://www.google.com/jsapi"></script>
+<script type="text/javascript" src="/_ah/channel/jsapi"></script>
+{% block sheader %}{% endblock %}
+{% endblock %}
+
+{% block body %}
+<div class="container">
+  <div class="hero-unit">
+    {# Show main contents only if user is logged in #}
+    {% if not login_url %}
+    <script>
+      window.waitMessage = "Please wait...";
+      window.buttonUnsubscribe = "Unsubscribe";
+      // Update current page content.
+      function updateContents(title, content, hideButton, showButton, buttonText) {
+        $("#heroTitle").text(title);
+        $("#heroContent").text(content);
+        hideButton.hide();
+        hideButton.attr("disabled", false);
+        showButton.show();
+        showButton.text(buttonText);
+      }
+      // Show contents for users who are not subscribed.
+      function updateUnsubscribed() {
+        if(typeof window.notification_id != "undefined"){
+          delete window.notification_id;
+        }
+        updateContents(
+          window.unsubscribedTitle,
+          window.unsubscribedContent,
+          $("#unsubscribeButton"),
+          $("#subscribeButton"),
+          window.subscribeButton
+        );
+        $("#subscribeBlock").text('');
+      }
+      // Show contents for users who are subscribed.
+      function updateSubscribed(notification_id) {
+        window.notification_id = notification_id;
+        updateContents(
+          window.subscribedTitle,
+          window.subscribedContent,
+          $("#subscribeButton"),
+          $("#unsubscribeButton"),
+          window.buttonUnsubscribe
+        );
+      }
+      // Unsubscribe from current push notifications.
+      function unsubscribe(){
+        updateWait($("#unsubscribeButton"), window.waitMessage, true);
+        // Make POST request to /unsubscribe.
+        var request = $.ajax({
+          type: "POST",
+          url: "/unsubscribe",
+          data: { state: "{{ state }}" },
+        })
+        request.done(function(msg){
+          updateUnsubscribed();
+        });
+        request.fail(function(jqXHR){
+          updateWait($("#unsubscribeButton"), window.buttonUnsubscribe, false);
+          alert("Failed:\n" + jqXHR.responseText);
+          checkAuth(jqXHR.status);
+        });
+      }
+      // Reload page if authorization failed
+      function checkAuth(code){
+        if(code==401){
+          location.reload();
+        }
+      }
+      // Update waiting message.
+      function updateWait(button, message, disabled){
+        button.attr("disabled", disabled);
+        button.text(message);
+      }
+      // Create channel to communicate with.
+      channel = new goog.appengine.Channel('{{ channel_id }}')
+      socket = channel.open({
+        onopen: function(){
+          console.log('onopen');
+        },
+        onclose: function(){
+          console.log('onclose');
+        },
+        onerror: function(){
+          console.log('onerror');
+        },
+        onmessage: function(message){
+          data = $.parseJSON(message.data);
+          // If incoming notification id matches that of what we are watching.
+          if(typeof window.notification_id != "undefined" &&
+             data.notification_id==window.notification_id){
+            // Update its contents.
+            $("#subscribeBlock").prepend('<div class="alert alert-info"><button type="button" class="close" data-dismiss="alert">&times;</button>'+message.data+'</div>');
+          }
+          console.log('onmessage');
+        }
+      });
+    </script>
+    <h1 id="heroTitle"></h1>
+    <p id="heroContent"></p>
+    <button id="subscribeButton" class="btn btn-primary btn-large" onclick="subscribe();">
+    </button>
+    <button id="unsubscribeButton" class="btn btn-primary btn-large" onclick="unsubscribe();">
+    </button>
+    {# Check if user is subscribed to specific push notifications #}
+    {% if notification_id %}
+    <script>updateSubscribed('{{ notification_id }}');</script>
+    {% else %}
+    <script>updateUnsubscribed();</script>
+    {% endif %}
+    {% else %}
+    <h1>Please log in</h1>
+    <p>Please log in to create a subscription</p>
+    {% endif %}
+  </div>
+  <div id="subscribeBlock">
+  </div>
+</div>
+{% endblock %}
