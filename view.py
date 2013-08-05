@@ -19,20 +19,22 @@ import pickle
 import urllib
 import urlparse
 import uuid
-import logging
 
 import httplib2
 import jinja2
 import webapp2
 from webapp2_extras import sessions
 
+from apiclient import errors
 from apiclient.discovery import build
 from google.appengine.api import channel
-from google.appengine.api import urlfetch
 from oauth2client.client import AccessTokenRefreshError
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.client import FlowExchangeError
 from oauth2client.clientsecrets import loadfile
+from push import StopChannel
+from push import WatchChange
+from push import WatchFile
 
 # Load client secrets from 'client_secrets.json' file.
 CLIENT_SECRETS = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
@@ -42,6 +44,7 @@ FLOW = flow_from_clientsecrets(
     scope=('https://www.googleapis.com/auth/drive '
            'https://www.googleapis.com/auth/userinfo.profile'),
     redirect_uri=client_info['redirect_uris'][0],)
+FLOW.params.update({'access_type': 'offline'})
 
 # Load Jinja2 template environment.
 JINJA_ENVIRONMENT = jinja2.Environment(
@@ -56,9 +59,10 @@ def ValidateCredential(function):
     if 'credential' in self.session:
       # Load credential from session data.
       credential = pickle.loads(self.session.get('credential'))
-      if credential.invalid:
+      http = httplib2.Http()
+      if credential.access_token_expired:
         try:
-          credential.refresh()
+          credential.refresh(http)
         except AccessTokenRefreshError:
           # When credential is invalid and refreshing fails, it returns 401.
           self.response.set_status(401)
@@ -68,7 +72,9 @@ def ValidateCredential(function):
         else:
           # Saves refreshed credential back to session data.
           self.session['credential'] = pickle.dumps(credential)
-      function(self, *args, **kwargs)
+      http = credential.authorize(http)
+      self.drive_service = build('drive', 'v2', http=http)
+      return function(self, *args, **kwargs)
     else:
       self.response.set_status(401)
       self.response.write('Unauthorized Access - User not logged in')
@@ -102,7 +108,8 @@ class BaseHandler(webapp2.RequestHandler):
     login_url = None
     if 'credential' not in self.session:
       # Create OAuth2 authentication url with given state parameter.
-      login_url = FLOW.step1_get_authorize_url()+'&state='+state
+      FLOW.params.update({'state': state})
+      login_url = FLOW.step1_get_authorize_url()
     return login_url
 
   def Unsubscribe(self, state, force_delete=False):
@@ -121,44 +128,28 @@ class BaseHandler(webapp2.RequestHandler):
     # Retrieve task-specific notification_id and resource_id
     notification_id = self.session.get('notification_id_{0}'.format(state))
     resource_id = self.session.get('resource_id_{0}'.format(state))
-    # If not subscribed, return False
+    # If not subscribed, return
+    return_val = {}
     if not (notification_id and resource_id):
-      return False
+      return_val['success'] = False
+      return_val['error_code'] = 400
+      return_val['error_msg'] = 'Not subscribed'
+      return return_val
     # Make unsubscribe request
     credential = pickle.loads(self.session.get('credential'))
-    url = 'https://www.googleapis.com/drive/v2/channels/stop'
-    headers = {
-        'Authorization': 'Bearer {0}'.format(credential.access_token),
-        'Content-Type': 'application/json',
-        }
-    data = {
-        'id': notification_id,
-        'resourceId': resource_id
-        }
-    form_data = json.dumps(data)
-    result_raw = urlfetch.fetch(url=url,
-                                payload=form_data,
-                                method=urlfetch.POST,
-                                headers=headers,
-                                deadline=20)
-    return_val = {}
-    if result_raw.status_code/100==2:
-      return_val['success'] = True
+    if not credential.access_token_expired and hasattr(self, 'drive_service'):
+      try:
+        StopChannel(self.drive_service, notification_id, resource_id)
+      except errors.HttpError, error:
+        return_val['success'] = False
+        return_val['error_code'] = error.resp.status
+        return_val['error_msg'] = error._get_reason().strip()
+      else:
+        return_val['success'] = True
     else:
       return_val['success'] = False
-      try:
-        result = json.loads(result_raw.content)
-      except ValueError:
-        return_val['error_code'] = 500
-        return_val['error_msg'] = 'Unexpected response from the server'
-      else:
-        error = result.get('error')
-        if error:
-          return_val['error_code'] = result_raw.status_code
-          return_val['error_msg'] = str(error.get('message'))
-        else:
-          return_val['error_code'] = 500
-          return_val['error_msg'] = 'Unexpected response from the server'
+      return_val['error_code'] = 401
+      return_val['error_msg'] = 'Credential expired'
     if return_val['success'] or force_delete:
       # Delete subscription information from session
       del self.session['notification_id_{0}'.format(state)]
@@ -248,65 +239,40 @@ class SubscribeHandler(BaseHandler):
     Subscribe to files resources if file id is provided with POST['file_id'].
     Subscribe to changes resources if not.
     """
-    # if POST['file_id'] is provided, request push notifications on files.
-    if 'file_id' in self.request.POST:
-      url = 'https://www.googleapis.com/drive/v2/files/{0}/watch'.format(
-          self.request.POST.get('file_id'))
-    # Otherwise, request push notifications on all changes of Drive.
-    else:
-      url = 'https://www.googleapis.com/drive/v2/changes/watch'
     # Prepare for push notifications request.
     credential = pickle.loads(self.session.get('credential'))
-    state = self.request.POST.get('state')
-    headers = {
-        'Authorization': 'Bearer {0}'.format(credential.access_token),
-        'Content-Type': 'application/json',
-        }
     # Token data to deliver target channel id and state of notifications.
+    state = self.request.POST.get('state')
     token_data = {
         'channel_id': self.session.get('token_{0}'.format(state)),
         'state': self.request.POST.get('state')
         }
     token_string = urllib.urlencode(token_data)
+    file_id = self.request.POST.get('file_id')
     notification_id = str(uuid.uuid4())
-    data = {
-        'id': notification_id,
-        'type': 'web_hook',
-        'address': self.request.host_url+'/notificationcallback',
-        'token': token_string,
-        'params': {'ttl': 1800}
-        }
-    form_data = json.dumps(data)
-    # Make POST request to subscribe to push notifications
-    result_raw = urlfetch.fetch(url=url,
-                                payload=form_data,
-                                method=urlfetch.POST,
-                                headers=headers,
-                                deadline=20)
-    logging.info('response body: '+str(result_raw.content))
+    channel_type = 'web_hook'
+    address = self.request.host_url+'/notificationcallback'
+    params = {'ttl': 1800}
+    # Make push notification request
     try:
-      result = json.loads(result_raw.content)
-    except ValueError:
-      self.response.set_status(500)
-      self.response.write('Unexpected response from the server')
-    else:
-      if result_raw.status_code/100==2:
-        self.session['notification_id_{0}'.format(state)] = notification_id
-        self.session['resource_id_{0}'.format(state)] = result['resourceId']
-        response = {
-            'notification_id': notification_id
-            }
-        self.response.write(json.dumps(response))
+      if file_id:
+        result = WatchFile(self.drive_service, file_id, notification_id,
+                           channel_type, address, channel_token=token_string,
+                           channel_params=params)
       else:
-        error = result.get('error')
-        if error:
-          self.response.set_status(result_raw.status_code)
-          self.response.write(str(error.get('message')))
-        else:
-          self.response.set_status(500)
-          self.response.write('Unexpected response from the server')
-        if result_raw.status_code==401:
-          self.LogOut()
+        result = WatchChange(self.drive_service, notification_id, channel_type,
+                             address, channel_token=token_string,
+                             channel_params=params)
+    except errors.HttpError, error:
+      self.response.set_status(error.resp.status)
+      self.response.write(error._get_reason().strip())
+    else:
+      self.session['notification_id_{0}'.format(state)] = result['id']
+      self.session['resource_id_{0}'.format(state)] = result['resourceId']
+      response = {
+          'notification_id': result['id']
+          }
+      self.response.write(json.dumps(response))
 
 
 class UnsubscribeHandler(BaseHandler):
@@ -323,7 +289,7 @@ class UnsubscribeHandler(BaseHandler):
     if not result['success']:
       self.response.set_status(result['error_code'])
       self.response.write(result['error_msg'])
-      if result['error_code']==401:
+      if result['error_code'] == 401:
         self.LogOut()
 
 
@@ -335,8 +301,6 @@ class NotificationCallbackHandler(BaseHandler):
 
     Log header and body of incoming notifications.
     """
-    logging.info('header: '+str(self.request.headers))
-    logging.info('body: '+str(self.request.body))
     # Ignore sync message.
     if self.request.headers['X-Goog-Resource-State'] == 'sync':
       return
