@@ -18,11 +18,12 @@ Google Drive Push Notifications Playground - Monitor specific files
 
   // Create and render a Picker object for searching images.
   function subscribe() {
-    var view = new google.picker.View(google.picker.ViewId.DOCS);
+    var view = new google.picker.DocsView();
+    view.setSelectFolderEnabled(true);
+    view.setIncludeFolders(true);
     var picker = new google.picker.PickerBuilder()
         .enableFeature(google.picker.Feature.NAV_HIDDEN)
         .addView(view)
-        .addView(new google.picker.DocsUploadView())
         .setCallback(pickerCallback)
         .build();
      picker.setVisible(true);
