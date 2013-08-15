@@ -12,8 +12,6 @@
     {# Show main contents only if user is logged in #}
     {% if not login_url %}
     <script>
-      window.waitMessage = "Please wait...";
-      window.buttonUnsubscribe = "Unsubscribe";
       // Update current page content.
       function updateContents(title, content, hideButton, showButton, buttonText) {
         $("#heroTitle").text(title);
@@ -29,11 +27,11 @@
           delete window.notification_id;
         }
         updateContents(
-          window.unsubscribedTitle,
-          window.unsubscribedContent,
+          messages['unsubscribedTitle'],
+          messages['unsubscribedContent'],
           $("#unsubscribeButton"),
           $("#subscribeButton"),
-          window.subscribeButton
+          messages['subscribeButton']
         );
         $("#subscribeBlock").text('');
       }
@@ -41,17 +39,15 @@
       function updateSubscribed(notification_id) {
         window.notification_id = notification_id;
         updateContents(
-          window.subscribedTitle,
-          window.subscribedContent,
+          messages['subscribedTitle'],
+          messages['subscribedContent'],
           $("#subscribeButton"),
           $("#unsubscribeButton"),
-          window.buttonUnsubscribe
+          messages['buttonUnsubscribe']
         );
       }
-      // Unsubscribe from current push notifications.
-      function unsubscribe(){
-        updateWait($("#unsubscribeButton"), window.waitMessage, true);
-        // Make POST request to /unsubscribe.
+      // Make POST request to /unsubscribe.
+      function unsubscribeRequest(retryCount) {
         var request = $.ajax({
           type: "POST",
           url: "/unsubscribe",
@@ -61,10 +57,32 @@
           updateUnsubscribed();
         });
         request.fail(function(jqXHR){
-          updateWait($("#unsubscribeButton"), window.buttonUnsubscribe, false);
-          alert("Failed:\n" + jqXHR.responseText);
-          checkAuth(jqXHR.status);
+          retry(unsubscribeRequest, unsubscribeFailUpdate, jqXHR, retryCount)(++retryCount);
         });
+      }
+      // Unsubscribe from current push notifications.
+      function unsubscribe(){
+        updateWait($("#unsubscribeButton"), messages['waitMessage'], true);
+        unsubscribeRequest(0);
+      }
+      var subscribeFailUpdate = function(jqXHR) {
+        updateWait($("#subscribeButton"), messages['subscribeButton'], false);
+        alert("Failed:\n" + jqXHR.responseText);
+        checkAuth(jqXHR.status);
+      }
+      var unsubscribeFailUpdate = function(jqXHR) {
+        updateWait($("#unsubscribeButton"), messages['buttonUnsubscribe'], false);
+        alert("Failed:\n" + jqXHR.responseText);
+        checkAuth(jqXHR.status);
+      }
+      var retry = function(retryFunction, failFunction, jqXHR, retryCount) {
+        if (jqXHR.status == 510 && retryCount < 5) {
+          return retryFunction;
+        }
+        else {
+          failFunction(jqXHR);
+          return (function(){});
+        }
       }
       // Reload page if authorization failed
       function checkAuth(code){
@@ -84,10 +102,10 @@
           console.log('onopen');
         },
         onclose: function(){
-          console.log('onclose');
+          window.location.replace('/logout?state={{ state }}');
         },
         onerror: function(){
-          console.log('onerror');
+          window.location.replace('/logout?state={{ state }}');
         },
         onmessage: function(message){
           data = $.parseJSON(message.data);

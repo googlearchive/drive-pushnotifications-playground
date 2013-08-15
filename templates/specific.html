@@ -7,12 +7,15 @@ Google Drive Push Notifications Playground - Monitor specific files
 {% block sheader %}
 <script type="text/javascript">
   // User interface messages
-  window.unsubscribedTitle = "Subscribe to changes in a specific file";
-  window.unsubscribedContent = "This is a demo application to receive push notifications for changes to a specific file. Select a file to begin.";
-  window.subscribedTitle = "Subscribing";
-  window.subscribedContent = "You are now subscribed to changes for the chosen file. Make changes to that file to receive push notifications.";
-  window.subscribeButton = "Select a file";
-
+  var messages = {
+    "unsubscribedTitle": "Subscribe to changes in a specific file",
+    "unsubscribedContent": "This is a demo application to receive push notifications for changes to a specific file. Select a file to begin.",
+    "subscribedTitle": "Subscribing",
+    "subscribedContent": "You are now subscribed to changes for the chosen file. Make changes to that file to receive push notifications.",
+    "subscribeButton": "Select a file",
+    "waitMessage": "Please wait...",
+    "buttonUnsubscribe": "Unsubscribe"
+  }
   // Use the Google Loader script to load the google.picker script.
   google.load('picker', '1');
 
@@ -28,26 +31,26 @@ Google Drive Push Notifications Playground - Monitor specific files
         .build();
      picker.setVisible(true);
   }
+  // Make AJAX call to subscribe
+  var subscribeRequest = function(fileId, retryCount) {
+    var request = $.ajax({
+      type: "POST",
+      url: "/subscribe",
+      data: { file_id: fileId, state: "{{ state }}" },
+    })
+    request.done(function(msg){
+      updateSubscribed($.parseJSON(msg).notification_id);
+    });
+    request.fail(function(jqXHR){
+      retry(subscribeRequest, subscribeFailUpdate, jqXHR, retryCount)(fileId, ++retryCount);
+    });
+  }
 
   // A simple callback implementation.
   function pickerCallback(data) {
     if (data.action == google.picker.Action.PICKED) {
-      updateWait($("#subscribeButton"), window.waitMessage, true);
-      var fileId = data.docs[0].id;
-      // Make AJAX call to subscribe
-      var request = $.ajax({
-        type: "POST",
-        url: "/subscribe",
-        data: { file_id: fileId, state: "{{ state }}" },
-      })
-      request.done(function(msg){
-        updateSubscribed($.parseJSON(msg).notification_id);
-      });
-      request.fail(function(jqXHR){
-        updateWait($("#subscribeButton"), window.subscribeButton, false);
-        alert("Failed:\n" + jqXHR.responseText);
-        checkAuth(jqXHR.status);
-      });
+      updateWait($("#subscribeButton"), messages['waitMessage'], true);
+      subscribeRequest(data.docs[0].id, 0);
     }
   }
 </script>

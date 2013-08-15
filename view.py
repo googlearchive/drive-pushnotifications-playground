@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 import hashlib
+import httplib
 import json
 import os
 import pickle
@@ -23,11 +24,14 @@ import uuid
 import httplib2
 import jinja2
 import webapp2
+from httplib import HTTPException
 from webapp2_extras import sessions
 
 from apiclient import errors
 from apiclient.discovery import build
 from google.appengine.api import channel
+from google.appengine.api import urlfetch
+from google.appengine.runtime.apiproxy_errors import DeadlineExceededError
 from oauth2client.client import AccessTokenRefreshError
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.client import FlowExchangeError
@@ -35,6 +39,9 @@ from oauth2client.clientsecrets import loadfile
 from push import StopChannel
 from push import WatchChange
 from push import WatchFile
+
+# Set deadline of urlfetch in order to prevent 5 second timeout
+urlfetch.set_default_fetch_deadline(45)
 
 # Load client secrets from 'client_secrets.json' file.
 CLIENT_SECRETS = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
@@ -45,6 +52,7 @@ FLOW = flow_from_clientsecrets(
            'https://www.googleapis.com/auth/userinfo.profile'),
     redirect_uri=client_info['redirect_uris'][0],)
 FLOW.params.update({'access_type': 'offline'})
+FLOW.params.update({'approval_prompt': 'force'})
 
 # Load Jinja2 template environment.
 JINJA_ENVIRONMENT = jinja2.Environment(
@@ -144,6 +152,11 @@ class BaseHandler(webapp2.RequestHandler):
         return_val['success'] = False
         return_val['error_code'] = error.resp.status
         return_val['error_msg'] = error._get_reason().strip()
+      except (DeadlineExceededError, HTTPException):
+        return_val['success'] = False
+        return_val['error_code'] = 510
+        return_val['error_msg'] = ('Request exceeded its deadline.'
+                                   'Please try again')
       else:
         return_val['success'] = True
     else:
@@ -266,6 +279,9 @@ class SubscribeHandler(BaseHandler):
     except errors.HttpError, error:
       self.response.set_status(error.resp.status)
       self.response.write(error._get_reason().strip())
+    except (DeadlineExceededError, HTTPException):
+      self.response.set_status(510)
+      self.response.write('Request exceeded its deadline. Please try again')
     else:
       self.session['notification_id_{0}'.format(state)] = result['id']
       self.session['resource_id_{0}'.format(state)] = result['resourceId']
